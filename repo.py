@@ -1,6 +1,6 @@
 from debian import deb822, debian_support
 from pathlib import Path
-import asyncio, gzip, logging, os, yaml
+import asyncio, gzip, logging, os, yaml, re
 import micro_buildd_conf as conf
 
 class Repo(object):
@@ -53,14 +53,19 @@ class Repo(object):
         with open(conf.rebuild_repo_packages_path) as fh:
             for pkgentry in deb822.Packages.iter_paragraphs(fh, use_apt_pkg=False):
                 arch = pkgentry['Architecture']
+                vers = pkgentry['Version']
                 try:
                     src = pkgentry['Source']
+                    # e.g. Source: gcc-defaults (1.185.1)
+                    if m := re.match('([^ ]*) [(](.*)[)]', src):
+                        src = m[1]
+                        vers = m[2]
                 except KeyError:
                     src = pkgentry['Package']
 
                 try:
                     resentry = res[(src, arch)]
-                    if resentry['Version'] == pkgentry['Version']:
+                    if resentry['Version'] == vers:
                         resentry['Installed'] = True
                 except KeyError:
                     pass
