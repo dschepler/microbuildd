@@ -81,6 +81,11 @@ rebuild_repo_packages_path: path to the main rebuild repository's Packages file
 rebuild_repo_packages_path = rebuild_repo_base_dir / f'dists/sid/main/binary-{rebuild_arch}/Packages'
 
 """
+rebuild_repo_udeb_packages_path: path to the main rebuild repository's udeb Packages file
+"""
+rebuild_repo_udeb_packages_path = rebuild_repo_base_dir / f'dists/sid/main/debian-installer/binary-{rebuild_arch}/Packages'
+
+"""
 rebuild_repo_partial_base_dir: base directory of the partial rebuild repository
 """
 rebuild_repo_partial_base_dir = rebuild_base_dir / 'repo-partial'

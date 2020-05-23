@@ -50,25 +50,26 @@ class Repo(object):
         await self.scanArch(conf.rebuild_arch, res)
         await self.scanArch('all', res)
 
-        with open(conf.rebuild_repo_packages_path) as fh:
-            for pkgentry in deb822.Packages.iter_paragraphs(fh, use_apt_pkg=False):
-                arch = pkgentry['Architecture']
-                vers = pkgentry['Version']
-                try:
-                    src = pkgentry['Source']
-                    # e.g. Source: gcc-defaults (1.185.1)
-                    if m := re.match('([^ ]*) [(](.*)[)]', src):
-                        src = m[1]
-                        vers = m[2]
-                except KeyError:
-                    src = pkgentry['Package']
+        for packages_path in (conf.rebuild_repo_packages_path, conf.rebuild_repo_udeb_packages_path):
+            with open(packages_path) as fh:
+                for pkgentry in deb822.Packages.iter_paragraphs(fh, use_apt_pkg=False):
+                    arch = pkgentry['Architecture']
+                    vers = pkgentry['Version']
+                    try:
+                        src = pkgentry['Source']
+                        # e.g. Source: gcc-defaults (1.185.1)
+                        if m := re.match('([^ ]*) [(](.*)[)]', src):
+                            src = m[1]
+                            vers = m[2]
+                    except KeyError:
+                        src = pkgentry['Package']
 
-                try:
-                    resentry = res[(src, arch)]
-                    if resentry['Version'] == vers:
-                        resentry['Installed'] = True
-                except KeyError:
-                    pass
+                    try:
+                        resentry = res[(src, arch)]
+                        if resentry['Version'] == vers:
+                            resentry['Installed'] = True
+                    except KeyError:
+                        pass
 
         return res
 
