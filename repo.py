@@ -4,12 +4,44 @@ import asyncio, gzip, logging, os, yaml, re
 import micro_buildd_conf as conf
 
 class Repo(object):
-    async def scanArch(self, arch, res):
+    def scanSrcs(self):
+        res = {}
+        with open(conf.apt_sources_path) as fh:
+            for srcentry in deb822.Sources.iter_paragraphs(fh, use_apt_pkg=False):
+                oldentry = res.get(srcentry["Package"], None)
+                if oldentry is None or debian_support.Version(oldentry["Version"]) < debian_support.Version(srcentry["Version"]):
+                    res[srcentry["Package"]] = srcentry
+
+        # now exclude entries where the latest package is marked as
+        # Extra-Source-Only: yes
+        eso_srcs = set()
+        for k, v in res.items():
+            if v.get("Extra-Source-Only", "no") == "yes":
+                eso_srcs.add(k)
+        for k in eso_srcs:
+            del res[k]
+
+        return res
+
+    async def scanArch(self, arch, srcs, res):
+        if arch == 'all':
+            archFilter = ['all']
+        elif arch == 'amd64':
+            archFilter = ['amd64', 'any', 'linux-any', 'any-amd64']
+        elif arch == 'i386':
+            archFilter = ['i386', 'any', 'linux-any', 'any-i386']
+        else:
+            raise RuntimeError(f'unsupported arch {arch}')
+
+        for pkg, entry in srcs.items():
+            if any(a in archFilter for a in entry["Architecture"].split()):
+                res[(pkg, arch)] = { 'Installed': False, 'Version': entry['Version'], 'Buildable': False, 'Reasons': 'unevaluated' }
+
         proc = await asyncio.create_subprocess_exec('dose-builddebcheck',
                                                     f'--deb-native-arch={conf.rebuild_arch}',
                                                     '--deb-drop-b-d-arch' if arch == 'all' else '--deb-drop-b-d-indep',
                                                     '--deb-emulate-sbuild',
-                                                    '--explain', '--successes', '--failures',
+                                                    '--successes',
                                                     str(conf.rebuild_repo_packages_path),
                                                     str(conf.rebuild_repo_partial_packages_path),
                                                     str(conf.apt_sources_path),
@@ -24,52 +56,66 @@ class Repo(object):
         debbuildcheck_out = await asyncio.get_running_loop().run_in_executor(
             None, yaml.load, stdout, yaml.CBaseLoader)
 
-        if arch == 'all':
-            archFilter = ['all']
-        elif arch == 'amd64':
-            archFilter = ['amd64', 'any', 'linux-any', 'any-amd64']
-        elif arch == 'i386':
-            archFilter = ['i386', 'any', 'linux-any', 'any-i386']
-        else:
-            raise RuntimeError(f'unsupported arch {arch}')
+        for entry in debbuildcheck_out['report']:
+            if any(a in archFilter for a in entry['architecture'].split(',')):
+                pkg = entry['package']
+                resentry = res.get((pkg, arch), None)
+                if resentry is not None and resentry['Version'] == entry['version']:
+                    resentry['Buildable'] = True
+                    del resentry['Reasons']
+
+        proc = await asyncio.create_subprocess_exec('dose-builddebcheck',
+                                                    f'--deb-native-arch={conf.rebuild_arch}',
+                                                    '--deb-drop-b-d-arch' if arch == 'all' else '--deb-drop-b-d-indep',
+                                                    '--deb-emulate-sbuild',
+                                                    '--explain', '--failures',
+                                                    str(conf.rebuild_repo_packages_path),
+                                                    str(conf.rebuild_repo_partial_packages_path),
+                                                    str(conf.apt_sources_path),
+                                                    stdin=asyncio.subprocess.DEVNULL,
+                                                    stdout=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        # note, because dose-builddebcheck does not properly quote its
+        # string values (such as "0xffff" package name), we intentionally use
+        # yaml.CBaseLoader instead of yaml.CSafeLoader
+        # see also: https://bugs.debian.org/cgi-bin/reportbug.cgi?bug=834059
+        debbuildcheck_out = await asyncio.get_running_loop().run_in_executor(
+            None, yaml.load, stdout, yaml.CBaseLoader)
 
         for entry in debbuildcheck_out['report']:
             if any(a in archFilter for a in entry['architecture'].split(',')):
-                pkg = entry["package"]
-
-                if entry['status'] == 'ok':
-                    res[(pkg, arch)] = { 'Installed': False, 'Version': entry['version'], 'Buildable': True }
-                elif entry['status'] == 'broken':
-                    res[(pkg, arch)] = { 'Installed': False, 'Version': entry['version'], 'Buildable': False, 'Reasons': yaml.safe_dump(entry['reasons']) }
+                pkg = entry['package']
+                resentry = res.get((pkg, arch), None)
+                if resentry is not None and resentry['Version'] == entry['version']:
+                    resentry['Buildable'] = False
+                    resentry['Reasons'] = yaml.safe_dump(entry['reasons'])
 
     async def scan(self):
         logging.info('Generating and processing package buildability info')
 
         res = {}
 
-        await self.scanArch(conf.rebuild_arch, res)
-        await self.scanArch('all', res)
+        srcs = self.scanSrcs()
+
+        await self.scanArch(conf.rebuild_arch, srcs, res)
+        await self.scanArch('all', srcs, res)
 
         for packages_path in (conf.rebuild_repo_packages_path, conf.rebuild_repo_udeb_packages_path):
             with open(packages_path) as fh:
                 for pkgentry in deb822.Packages.iter_paragraphs(fh, use_apt_pkg=False):
                     arch = pkgentry['Architecture']
                     vers = pkgentry['Version']
-                    try:
-                        src = pkgentry['Source']
-                        # e.g. Source: gcc-defaults (1.185.1)
-                        if m := re.match('([^ ]*) [(](.*)[)]', src):
-                            src = m[1]
-                            vers = m[2]
-                    except KeyError:
-                        src = pkgentry['Package']
+                    src = pkgentry.get('Source', pkgentry['Package'])
 
-                    try:
-                        resentry = res[(src, arch)]
-                        if resentry['Version'] == vers:
-                            resentry['Installed'] = True
-                    except KeyError:
-                        pass
+                    # handle e.g. Source: gcc-defaults (1.185.1)
+                    if m := re.match('([^ ]*) [(](.*)[)]', src):
+                        src = m[1]
+                        vers = m[2]
+
+                    resentry = res.get((src, arch), None)
+                    if resentry is not None and resentry['Version'] == vers:
+                        resentry['Installed'] = True
 
         return res
 
