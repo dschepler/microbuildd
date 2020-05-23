@@ -23,7 +23,7 @@ class MicroBuilddController(object):
         while True:
             async with self.lock:
                 await self.repo.process_incoming()
-                await self.statesdb.update()
+                await self.statesdb.update(self.repo)
 
             await asyncio.sleep(conf.incoming_interval)
 
@@ -38,7 +38,7 @@ class MicroBuilddController(object):
             await asyncio.sleep(conf.chroot_update_interval)
 
             async with self.lock:
-                await self.chroot.update(self.repo)
+                await self.chroot.update()
 
     async def run(self):
         await asyncio.gather(
