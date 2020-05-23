@@ -8,9 +8,11 @@ class MicroBuilddController(object):
     statesdb = None
     repo = None
     chroot = None
+    lock = None
 
     def __init__(self):
-        self.statesdb = states.States()
+        self.lock = asyncio.Lock()
+        self.statesdb = states.States(self.lock)
         self.repo = repo.Repo()
         self.chroot = chroot.Chroot()
 
@@ -19,19 +21,24 @@ class MicroBuilddController(object):
 
     async def incoming_loop(self):
         while True:
-            await self.repo.process_incoming()
-            await self.statesdb.update(self.repo)
+            async with self.lock:
+                await self.repo.process_incoming()
+                await self.statesdb.update()
+
             await asyncio.sleep(conf.incoming_interval)
 
     async def build_loop(self):
         while True:
-            async with self.statesdb.get_package_to_build() as build_lease:
-                await self.chroot.build(build_lease, self.statesdb, self.repo)
+            async with self.lock:
+                async with self.statesdb.get_package_to_build() as build_lease:
+                    await self.chroot.build(build_lease, self.statesdb)
 
     async def chroot_update_loop(self):
         while True:
             await asyncio.sleep(conf.chroot_update_interval)
-            await self.chroot.update(self.repo)
+
+            async with self.lock:
+                await self.chroot.update(self.repo)
 
     async def run(self):
         await asyncio.gather(

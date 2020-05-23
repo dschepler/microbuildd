@@ -4,11 +4,6 @@ import asyncio, gzip, logging, os, yaml
 import micro_buildd_conf as conf
 
 class Repo(object):
-    repo_lock = None
-
-    def __init__(self):
-        self.repo_lock = asyncio.Lock()
-
     async def scanArch(self, arch, res):
         proc = await asyncio.create_subprocess_exec('dose-builddebcheck',
                                                     f'--deb-native-arch={conf.rebuild_arch}',
@@ -48,37 +43,35 @@ class Repo(object):
                     res[(pkg, arch)] = { 'Installed': False, 'Version': entry['version'], 'Buildable': False, 'Reasons': yaml.safe_dump(entry['reasons']) }
 
     async def scan(self):
-        async with self.repo_lock:
-            logging.info('Generating and processing package buildability info')
+        logging.info('Generating and processing package buildability info')
 
-            res = {}
-                                                          
-            await self.scanArch(conf.rebuild_arch, res)
-            await self.scanArch('all', res)
+        res = {}
 
-            with open(conf.rebuild_repo_packages_path) as fh:
-                for pkgentry in deb822.Packages.iter_paragraphs(fh, use_apt_pkg=False):
-                    arch = pkgentry['Architecture']
-                    try:
-                        src = pkgentry['Source']
-                    except KeyError:
-                        src = pkgentry['Package']
-            
-                    try:
-                        resentry = res[(src, arch)]
-                        if resentry['Version'] == pkgentry['Version']:
-                            resentry['Installed'] = True
-                    except KeyError:
-                        pass
+        await self.scanArch(conf.rebuild_arch, res)
+        await self.scanArch('all', res)
+
+        with open(conf.rebuild_repo_packages_path) as fh:
+            for pkgentry in deb822.Packages.iter_paragraphs(fh, use_apt_pkg=False):
+                arch = pkgentry['Architecture']
+                try:
+                    src = pkgentry['Source']
+                except KeyError:
+                    src = pkgentry['Package']
+
+                try:
+                    resentry = res[(src, arch)]
+                    if resentry['Version'] == pkgentry['Version']:
+                        resentry['Installed'] = True
+                except KeyError:
+                    pass
 
         return res
 
     async def process_incoming(self):
-        async with self.repo_lock:
-            logging.info('Processing incoming directory')
-            proc = await asyncio.create_subprocess_exec('reprepro', 'processincoming', 'unstable',
-                                                        cwd=conf.rebuild_repo_base_dir,
-                                                        stdin=asyncio.subprocess.DEVNULL)
-            await proc.wait()
-            if proc.returncode != 0:
-                logging.warn('reprepro processincoming failed')
+        logging.info('Processing incoming directory')
+        proc = await asyncio.create_subprocess_exec('reprepro', 'processincoming', 'unstable',
+                                                    cwd=conf.rebuild_repo_base_dir,
+                                                    stdin=asyncio.subprocess.DEVNULL)
+        await proc.wait()
+        if proc.returncode != 0:
+            logging.warn('reprepro processincoming failed')

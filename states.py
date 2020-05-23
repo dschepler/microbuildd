@@ -5,22 +5,20 @@ import micro_buildd_conf as conf
 class States(object):
 
     db = None
-    db_lock = None
     db_updated_cond = None
+
+    def __init__(self, lock):
+        self.db_updated_cond = asyncio.Condition(lock)
 
     async def init(self):
         self.db = await aiosqlite.connect(conf.database_path)
         self.db.row_factory = aiosqlite.Row
-        self.db_lock = asyncio.Lock()
-        self.db_updated_cond = asyncio.Condition(self.db_lock)
 
-        async with self.db_lock:
-            await self.ensure_db()
+        await self.ensure_db()
 
     async def shutdown(self):
         await self.db.close()
         self.db = None
-        self.db_lock = None
 
     def state_for_avail(self, avail):
         if avail['Installed']:
@@ -70,101 +68,99 @@ class States(object):
 
         availpkgs = await repo.scan()
 
-        async with self.db_lock:
-            logging.info('Updating sqlite database from repository status')
+        logging.info('Updating sqlite database from repository status')
 
-            await self.ensure_db()
+        await self.ensure_db()
 
-            newpkgs = []
-            obsoletes = []
-            newvers = []
-            newinst = []
-            bduninst_to_needsbuild = []
-            needsbuild_to_bduninst = []
-            bduninst_changed_reasons = []
-            async with self.db.execute("SELECT * FROM states") as cursor:
-                async for row in cursor:
-                    if (row['Package'], row['Architecture']) in availpkgs:
-                        availentry = availpkgs[(row['Package'], row['Architecture'])]
-                        availentry['InDB'] = True
-                        if availentry['Version'] != row['Version']:
-                            newvers += [{'RowId': row['RowId'], 'Version': availentry['Version'],
-                                         'State': self.state_for_avail(availentry),
-                                         'Reasons': self.reasons_for_avail(availentry)}]
-                        elif availentry['Installed'] and row['State'] != 'Installed':
-                            newinst += [{'RowId': row['RowId']}]
-                        elif availentry['Buildable'] and row['State'] == 'BD-Uninstallable':
-                            bduninst_to_needsbuild += [{'RowId': row['RowId']}]
-                        elif not availentry['Buildable'] and row['State'] == 'Needs-Build':
-                            needsbuild_to_bduninst += [{'RowId': row['RowId'], 'Reasons': availentry['Reasons']}]
-                        elif (not availentry['Buildable'] and row['State'] == 'BD-Uninstallable' and
-                              availentry['Reasons'] != row['BDUninstallableReasons']):
-                            bduninst_changed_reasons += [{'RowId': row['RowId'], 'Reasons': availentry['Reasons']}]
-                    else:
-                        obsoletes += [{'RowId': row['RowId']}]
-
-                for ((pkg, arch), availentry) in availpkgs.items():
-                    if 'InDB' not in availentry:
-                        newpkgs += [{'Package': pkg, 'Architecture': arch, 'Version': availentry['Version'],
+        newpkgs = []
+        obsoletes = []
+        newvers = []
+        newinst = []
+        bduninst_to_needsbuild = []
+        needsbuild_to_bduninst = []
+        bduninst_changed_reasons = []
+        async with self.db.execute("SELECT * FROM states") as cursor:
+            async for row in cursor:
+                if (row['Package'], row['Architecture']) in availpkgs:
+                    availentry = availpkgs[(row['Package'], row['Architecture'])]
+                    availentry['InDB'] = True
+                    if availentry['Version'] != row['Version']:
+                        newvers += [{'RowId': row['RowId'], 'Version': availentry['Version'],
                                      'State': self.state_for_avail(availentry),
                                      'Reasons': self.reasons_for_avail(availentry)}]
+                    elif availentry['Installed'] and row['State'] != 'Installed':
+                        newinst += [{'RowId': row['RowId']}]
+                    elif availentry['Buildable'] and row['State'] == 'BD-Uninstallable':
+                        bduninst_to_needsbuild += [{'RowId': row['RowId']}]
+                    elif not availentry['Buildable'] and row['State'] == 'Needs-Build':
+                        needsbuild_to_bduninst += [{'RowId': row['RowId'], 'Reasons': availentry['Reasons']}]
+                    elif (not availentry['Buildable'] and row['State'] == 'BD-Uninstallable' and
+                          availentry['Reasons'] != row['BDUninstallableReasons']):
+                        bduninst_changed_reasons += [{'RowId': row['RowId'], 'Reasons': availentry['Reasons']}]
+                else:
+                    obsoletes += [{'RowId': row['RowId']}]
 
-            await self.db.executemany("""INSERT INTO states (Package, Architecture, Version, State, BDUninstallableReasons, Timestamp)
-                VALUES (:Package, :Architecture, :Version, :State, :Reasons, datetime('now'))
-                """, newpkgs)
-            await self.db.executemany("""DELETE FROM states WHERE RowId = :RowId""", obsoletes)
-            await self.db.executemany("""UPDATE states
-                SET Version = :Version,
-                    State = :State,
-                    BDUninstallableReasons = :Reasons,
-                    Timestamp = datetime('now')
-                WHERE RowId = :RowId
-                """, newvers)
-            await self.db.executemany("""UPDATE states
-                SET State = 'Installed',
-                    BDUninstallableReasons = '',
-                    Timestamp = datetime('now')
-                WHERE RowId = :RowId
-                """, newinst)
-            await self.db.executemany("""UPDATE states
-                SET State = 'Needs-Build',
-                    BDUninstallableReasons = '',
-                    Timestamp = datetime('now')
-                WHERE RowId = :RowId
-                """, bduninst_to_needsbuild)
-            await self.db.executemany("""UPDATE states
-                SET State = 'BD-Uninstallable',
-                    BDUninstallableReasons = :Reasons,
-                    Timestamp = datetime('now')
-                WHERE RowId = :RowId
-                """, needsbuild_to_bduninst)
-            await self.db.executemany("""UPDATE states
-                SET BDUninstallableReasons = :Reasons
-                WHERE RowId = :RowId
-                """, bduninst_changed_reasons)
+            for ((pkg, arch), availentry) in availpkgs.items():
+                if 'InDB' not in availentry:
+                    newpkgs += [{'Package': pkg, 'Architecture': arch, 'Version': availentry['Version'],
+                                 'State': self.state_for_avail(availentry),
+                                 'Reasons': self.reasons_for_avail(availentry)}]
 
-            await self.db.commit()
+        await self.db.executemany("""INSERT INTO states (Package, Architecture, Version, State, BDUninstallableReasons, Timestamp)
+            VALUES (:Package, :Architecture, :Version, :State, :Reasons, datetime('now'))
+            """, newpkgs)
+        await self.db.executemany("""DELETE FROM states WHERE RowId = :RowId""", obsoletes)
+        await self.db.executemany("""UPDATE states
+            SET Version = :Version,
+                State = :State,
+                BDUninstallableReasons = :Reasons,
+                Timestamp = datetime('now')
+            WHERE RowId = :RowId
+            """, newvers)
+        await self.db.executemany("""UPDATE states
+            SET State = 'Installed',
+                BDUninstallableReasons = '',
+                Timestamp = datetime('now')
+            WHERE RowId = :RowId
+            """, newinst)
+        await self.db.executemany("""UPDATE states
+            SET State = 'Needs-Build',
+                BDUninstallableReasons = '',
+                Timestamp = datetime('now')
+            WHERE RowId = :RowId
+            """, bduninst_to_needsbuild)
+        await self.db.executemany("""UPDATE states
+            SET State = 'BD-Uninstallable',
+                BDUninstallableReasons = :Reasons,
+                Timestamp = datetime('now')
+            WHERE RowId = :RowId
+            """, needsbuild_to_bduninst)
+        await self.db.executemany("""UPDATE states
+            SET BDUninstallableReasons = :Reasons
+            WHERE RowId = :RowId
+            """, bduninst_changed_reasons)
 
-            self.db_updated_cond.notify_all()
+        await self.db.commit()
+
+        self.db_updated_cond.notify_all()
 
     async def register_log(self, loginfo):
-        async with self.db_lock:
-            await self.db.execute("""CREATE TABLE IF NOT EXISTS "logs"
-                ("RowId" INTEGER PRIMARY KEY,
-                 "Filename" TEXT UNIQUE,
-                 "Package" TEXT,
-                 "Version" TEXT,
-                 "Status" TEXT,
-                 "PackageTime" INTEGER,
-                 "Space" INTEGER,
-                 "StartTimestamp" TEXT,
-                 "EndTimestamp" TEXT)
-                """)
-            await self.db.execute("""
-                INSERT INTO logs (Filename, Package, Version, Status, PackageTime, Space, StartTimestamp, EndTimestamp)
-                    VALUES (:Filename, :Package, :Version, :Status, :PackageTime, :Space, datetime(:StartTimestamp), datetime(:EndTimestamp))
-                """, loginfo)
-            await self.db.commit()
+        await self.db.execute("""CREATE TABLE IF NOT EXISTS "logs"
+            ("RowId" INTEGER PRIMARY KEY,
+             "Filename" TEXT UNIQUE,
+             "Package" TEXT,
+             "Version" TEXT,
+             "Status" TEXT,
+             "PackageTime" INTEGER,
+             "Space" INTEGER,
+             "StartTimestamp" TEXT,
+             "EndTimestamp" TEXT)
+            """)
+        await self.db.execute("""
+            INSERT INTO logs (Filename, Package, Version, Status, PackageTime, Space, StartTimestamp, EndTimestamp)
+                VALUES (:Filename, :Package, :Version, :Status, :PackageTime, :Space, datetime(:StartTimestamp), datetime(:EndTimestamp))
+            """, loginfo)
+        await self.db.commit()
 
     class BuildLease(object):
         statesdb = None
@@ -196,27 +192,25 @@ class States(object):
         return States.BuildLease(self)
 
     async def _get_package_to_build(self):
-        async with self.db_lock:
-            while True:
-                async with self.db.execute("""SELECT * FROM states WHERE State = "Needs-Build"
-                    ORDER BY Timestamp ASC
-                    LIMIT 1""") as cursor:
-                    async for row in cursor:
-                        await self.db.execute("""UPDATE states
-                            SET State = "Building",
-                                Timestamp = datetime('now')
-                            WHERE RowId = :RowId""",
-                            {'RowId': row['RowId']})
-                        await self.db.commit()
-                        return (row['Package'], row['Architecture'], row['Version'])
+        while True:
+            async with self.db.execute("""SELECT * FROM states WHERE State = "Needs-Build"
+                ORDER BY Timestamp ASC
+                LIMIT 1""") as cursor:
+                async for row in cursor:
+                    await self.db.execute("""UPDATE states
+                        SET State = "Building",
+                            Timestamp = datetime('now')
+                        WHERE RowId = :RowId""",
+                        {'RowId': row['RowId']})
+                    await self.db.commit()
+                    return (row['Package'], row['Architecture'], row['Version'])
 
-                await self.db_updated_cond.wait()
+            await self.db_updated_cond.wait()
 
     async def register_build_result(self, package, architecture, version, newstate):
-        async with self.db_lock:
-            await self.db.execute("""UPDATE states
-                SET State = :Newstate,
-                    Timestamp = datetime('now')
-                WHERE Package = :Package AND Architecture = :Architecture AND Version = :Version AND State = "Building"
-                """, {'Package': package, 'Architecture': architecture, 'Version': version, 'Newstate': newstate})
-            await self.db.commit()
+        await self.db.execute("""UPDATE states
+            SET State = :Newstate,
+                Timestamp = datetime('now')
+            WHERE Package = :Package AND Architecture = :Architecture AND Version = :Version AND State = "Building"
+            """, {'Package': package, 'Architecture': architecture, 'Version': version, 'Newstate': newstate})
+        await self.db.commit()
