@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+
+import asyncio, logging, os
+import states, repo, chroot
+import micro_buildd_conf as conf
+
+class MicroBuilddController(object):
+    statesdb = None
+    repo = None
+    chroot = None
+
+    def __init__(self):
+        self.statesdb = states.States()
+        self.repo = repo.Repo()
+        self.chroot = chroot.Chroot()
+
+    async def init(self):
+        await self.statesdb.init()
+
+    async def incoming_loop(self):
+        while True:
+            await self.repo.process_incoming()
+            await self.statesdb.update(self.repo)
+            await asyncio.sleep(conf.incoming_interval)
+
+    async def build_loop(self):
+        while True:
+            async with self.statesdb.get_package_to_build() as build_lease:
+                await self.chroot.build(build_lease, self.statesdb, self.repo)
+
+    async def chroot_update_loop(self):
+        while True:
+            await asyncio.sleep(conf.chroot_update_interval)
+            await self.chroot.update(self.repo)
+
+    async def run(self):
+        await asyncio.gather(
+            self.incoming_loop(),
+            self.build_loop(),
+            self.chroot_update_loop())
+
+    async def shutdown(self):
+        await self.statesdb.shutdown()
+
+async def aiomain():
+    os.environ['LC_ALL'] = 'C.UTF-8'
+    os.environ['LANG'] = 'C.UTF-8'
+    try:
+        del os.environ['DEB_BUILD_OPTIONS']
+    except KeyError:
+        pass
+    try:
+        del os.environ['DEB_BUILD_PROFILES']
+    except KeyError:
+        pass
+
+    controller = MicroBuilddController()
+    await controller.init()
+    await controller.run()
+    await controller.shutdown()
+
+def main():
+    asyncio.run(aiomain())
+
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s:%(levelname)s] %(message)s')
+    main()
