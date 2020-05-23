@@ -7,6 +7,7 @@ source-only uploads.
 ## Requirements
 * Python 3
 * reprepro
+* dose-builddebcheck
 * aiosqlite Python module
 * python-debian Python module
 
