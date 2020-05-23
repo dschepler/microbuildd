@@ -6,6 +6,11 @@ sbuild_key_id: the id the the GPG key to use in signing builds
 sbuild_key_id = '633ADD6478E206D95E40ECAA0BDA22B2788F37F7'
 
 """
+maintainer: the maintainer string to use for builds
+"""
+maintainer = 'Daniel Schepler <dschepler@gmail.com>'
+
+"""
 rebuild_base_dir: base directory of the rebuild repositories,
 logs, temporary build directories, etc.
 """

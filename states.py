@@ -43,6 +43,8 @@ class States(object):
              "State" TEXT,
              "BDUninstallableReasons" TEXT,
              "Timestamp" TEXT,
+             "BinNMUVersion" INTEGER,
+             "BinNMUChangelog" TEXT,
              UNIQUE("Package", "Architecture"))
         """)
         
@@ -88,7 +90,7 @@ class States(object):
                         newvers += [{'RowId': row['RowId'], 'Version': availentry['Version'],
                                      'State': self.state_for_avail(availentry),
                                      'Reasons': self.reasons_for_avail(availentry)}]
-                    elif availentry['Installed'] and row['State'] != 'Installed':
+                    elif availentry['Installed'] and row['State'] != 'Installed' and availentry['BinNMUVersion'] == row['BinNMUVersion']:
                         newinst += [{'RowId': row['RowId']}]
                     elif availentry['Buildable'] and row['State'] == 'BD-Uninstallable':
                         bduninst_to_needsbuild += [{'RowId': row['RowId']}]
@@ -109,35 +111,37 @@ class States(object):
         await self.db.executemany("""INSERT INTO states (Package, Architecture, Version, State, BDUninstallableReasons, Timestamp)
             VALUES (:Package, :Architecture, :Version, :State, :Reasons, datetime('now'))
             """, newpkgs)
-        await self.db.executemany("""DELETE FROM states WHERE RowId = :RowId""", obsoletes)
+        await self.db.executemany("""DELETE FROM states WHERE RowId == :RowId""", obsoletes)
         await self.db.executemany("""UPDATE states
             SET Version = :Version,
                 State = :State,
                 BDUninstallableReasons = :Reasons,
-                Timestamp = datetime('now')
-            WHERE RowId = :RowId
+                Timestamp = datetime('now'),
+                BinNMUVersion = null,
+                BinNMUChangelog = ''
+            WHERE RowId == :RowId
             """, newvers)
         await self.db.executemany("""UPDATE states
             SET State = 'Installed',
                 BDUninstallableReasons = '',
                 Timestamp = datetime('now')
-            WHERE RowId = :RowId
+            WHERE RowId == :RowId
             """, newinst)
         await self.db.executemany("""UPDATE states
             SET State = 'Needs-Build',
                 BDUninstallableReasons = '',
                 Timestamp = datetime('now')
-            WHERE RowId = :RowId
+            WHERE RowId == :RowId
             """, bduninst_to_needsbuild)
         await self.db.executemany("""UPDATE states
             SET State = 'BD-Uninstallable',
                 BDUninstallableReasons = :Reasons,
                 Timestamp = datetime('now')
-            WHERE RowId = :RowId
+            WHERE RowId == :RowId
             """, needsbuild_to_bduninst)
         await self.db.executemany("""UPDATE states
             SET BDUninstallableReasons = :Reasons
-            WHERE RowId = :RowId
+            WHERE RowId == :RowId
             """, bduninst_changed_reasons)
 
         await self.db.commit()
@@ -167,6 +171,8 @@ class States(object):
         package = None
         architecture = None
         version = None
+        binnmu_version = None
+        binnmu_changelog = None
         build_result = None
         
         def __init__(self, statesdb):
@@ -176,41 +182,51 @@ class States(object):
             self.build_result = None
 
         async def __aenter__(self):
-            (self.package, self.architecture, self.version) = await self.statesdb._get_package_to_build()
+            (self.package, self.architecture, self.version, self.binnmu_version, self.binnmu_changelog) = await self.statesdb._get_package_to_build()
             return self
 
         async def set_build_result(self, newstate):
             self.build_result = newstate
-            await self.statesdb.register_build_result(self.package, self.architecture, self.version, newstate)
+            await self.statesdb.register_build_result(self.package, self.architecture, self.version, self.binnmu_version, newstate)
 
         async def __aexit__(self, *exc):
             if self.package is not None and self.build_result is None:
-                logging.info(f'Build lease for {self.package} version {self.version} terminated unexpectedly, setting State to Internal-Error')
+                logging.info(f'Build lease for {self.package} version {self.versionstr()} terminated unexpectedly, setting State to Internal-Error')
                 await self.set_build_result('Internal-Error')
+
+        def versionstr(self):
+            return self.version if self.binnmu_version is None else f'{self.version}+b{self.binnmu_version}'
 
     def get_package_to_build(self):
         return States.BuildLease(self)
 
     async def _get_package_to_build(self):
         while True:
-            async with self.db.execute("""SELECT * FROM states WHERE State = "Needs-Build"
+            async with self.db.execute("""SELECT * FROM states WHERE State == "Needs-Build"
                 ORDER BY Timestamp ASC
                 LIMIT 1""") as cursor:
                 async for row in cursor:
                     await self.db.execute("""UPDATE states
                         SET State = "Building",
                             Timestamp = datetime('now')
-                        WHERE RowId = :RowId""",
+                        WHERE RowId == :RowId""",
                         {'RowId': row['RowId']})
                     await self.db.commit()
-                    return (row['Package'], row['Architecture'], row['Version'])
+                    return (row['Package'], row['Architecture'], row['Version'], row['BinNMUVersion'], row['BinNMUChangelog'])
 
             await self.db_updated_cond.wait()
 
-    async def register_build_result(self, package, architecture, version, newstate):
-        await self.db.execute("""UPDATE states
-            SET State = :Newstate,
-                Timestamp = datetime('now')
-            WHERE Package = :Package AND Architecture = :Architecture AND Version = :Version AND State = "Building"
-            """, {'Package': package, 'Architecture': architecture, 'Version': version, 'Newstate': newstate})
+    async def register_build_result(self, package, architecture, version, binnmu_version, newstate):
+        if binnmu_version is None:
+            await self.db.execute("""UPDATE states
+                SET State = :Newstate,
+                    Timestamp = datetime('now')
+                WHERE Package == :Package AND Architecture == :Architecture AND Version == :Version AND BINNMUVersion IS NULL AND State == "Building"
+                """, {'Package': package, 'Architecture': architecture, 'Version': version, 'BinNMUVersion': binnmu_version, 'Newstate': newstate})
+        else:
+            await self.db.execute("""UPDATE states
+                SET State = :Newstate,
+                    Timestamp = datetime('now')
+                WHERE Package == :Package AND Architecture == :Architecture AND Version == :Version AND BinNMUVersion == :BinNMUVersion AND State == "Building"
+                """, {'Package': package, 'Architecture': architecture, 'Version': version, 'BinNMUVersion': binnmu_version, 'Newstate': newstate})
         await self.db.commit()

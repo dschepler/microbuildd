@@ -30,11 +30,15 @@ class Chroot(object):
         package = build_lease.package
         architecture = build_lease.architecture
         version = build_lease.version
+        binnmu_version = build_lease.binnmu_version
+        binnmu_changelog = build_lease.binnmu_changelog
         with self.mkbuilddir(package, architecture, version) as builddir:
-            logging.info(f'Starting build of {package}:{architecture} version {version}')
+            logging.info(f'Starting build of {package}:{architecture} version {build_lease.versionstr()}')
             proc = await asyncio.create_subprocess_exec(
                 'sbuild', f'--chroot-mode={conf.sbuild_chroot_mode}', '-c', f'chroot:{conf.sbuild_chroot_name}', '-d', 'unstable',
                 '--no-arch-any' if architecture == 'all' else '--no-arch-all',
+                *((f'--binNMU={binnmu_version}', f'--make-binNMU={binnmu_changelog}') if binnmu_version is not None else ()),
+                '-m', conf.maintainer,
                 '--keyid', conf.sbuild_key_id, f'{package}_{version}',
                 cwd=builddir,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -53,7 +57,7 @@ class Chroot(object):
                 return
             loginfo = self.scan_log(logfile)
 
-            logging.info(f'Build of {package}:{architecture} version {version} completed with status {loginfo["Status"]}')
+            logging.info(f'Build of {package}:{architecture} version {build_lease.versionstr()} completed with status {loginfo["Status"]}')
             logfile.rename(conf.rebuild_logs_dir / logfile.name)
             await statesdb.register_log(loginfo)
             if loginfo['Status'] == 'successful':
