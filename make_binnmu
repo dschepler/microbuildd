@@ -18,8 +18,9 @@ e.g. make_binnmu r-cran-ade4 1.7-15-1 "Rebuild against r-api-4.0"
         SET BinNMUVersion = CASE WHEN BinNMUVersion IS NULL THEN 1 ELSE BinNMUVersion + 1 END,
             BinNMUChangelog = :BinNMUChangelog,
             State = "BD-Uninstallable",
-            BDUninstallableReasons = "unevaluated"
-        WHERE Package == :Package AND Version == :Version AND State == "Installed";
+            BDUninstallableReasons = "unevaluated",
+            Timestamp = datetime("now")
+        WHERE Package == :Package AND Architecture != "all" AND Version == :Version AND State == "Installed";
         """, {'Package': argv[0], 'Version': argv[1], 'BinNMUChangelog': argv[2] })
     db.commit()
 
