@@ -10,13 +10,13 @@ class States(object):
     def __init__(self, lock):
         self.db_updated_cond = asyncio.Condition(lock)
 
-    async def init(self):
+    async def __aenter__(self):
         self.db = await aiosqlite.connect(conf.database_path)
         self.db.row_factory = aiosqlite.Row
 
         await self.ensure_db()
 
-    async def shutdown(self):
+    async def __aexit__(self, *exc):
         await self.db.close()
         self.db = None
 
