@@ -9,9 +9,11 @@ class MicroBuilddController(object):
     repo = None
     chroot = None
     lock = None
+    immediate_processincoming_event = None
 
     def __init__(self):
         self.lock = asyncio.Lock()
+        self.immediate_processincoming_event = asyncio.Event()
         self.statesdb = states.States(self.lock)
         self.repo = repo.Repo()
         self.chroot = chroot.Chroot()
@@ -29,12 +31,18 @@ class MicroBuilddController(object):
         while True:
             await shield_util.shield_and_wait(self.process_incoming_and_update_db_atom())
 
-            await asyncio.sleep(conf.incoming_interval)
+            self.immediate_processincoming_event.clear()
+            try:
+                await asyncio.wait_for(self.immediate_processincoming_event.wait(), timeout=conf.incoming_interval)
+            except asyncio.TimeoutError:
+                pass
 
     async def build_loop(self):
+        first_time = True
         while True:
             async with self.lock:
-                async with self.statesdb.get_package_to_build() as build_lease:
+                async with self.statesdb.get_package_to_build(first_time=first_time, event_to_signal_on_failure=self.immediate_processincoming_event) as build_lease:
+                    first_time = False
                     await shield_util.shield_and_wait(self.chroot.build(build_lease, self.statesdb))
 
     async def chroot_update_loop(self):
@@ -47,7 +55,11 @@ class MicroBuilddController(object):
     def shutdown_handler(self, tasks):
         logging.info('Shutting down')
         tasks.cancel()
-        
+
+    def sigusr1_handler(self):
+        logging.info('Scheduling immediate processing of incoming due to user signal')
+        self.immediate_processincoming_event.set()
+
     async def run(self):
         tasks = asyncio.gather(
             self.incoming_loop(),
@@ -56,6 +68,7 @@ class MicroBuilddController(object):
         loop = asyncio.get_running_loop()
         for sig in signal.SIGINT, signal.SIGTERM:
             loop.add_signal_handler(sig, self.shutdown_handler, tasks)
+        loop.add_signal_handler(signal.SIGUSR1, self.sigusr1_handler)
 
         await tasks
 

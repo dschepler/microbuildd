@@ -174,15 +174,22 @@ class States(object):
         binnmu_version = None
         binnmu_changelog = None
         build_result = None
+        first_time = False
+        event_to_signal_on_failure = None
         
-        def __init__(self, statesdb):
+        def __init__(self, statesdb, first_time, event_to_signal_on_failure):
             self.statesdb = statesdb
             self.package = None
+            self.architecture = None
             self.version = None
+            self.binnmu_version = None
+            self.binnmu_changelog = None
             self.build_result = None
+            self.first_time = first_time
+            self.event_to_signal_on_failure = event_to_signal_on_failure
 
         async def __aenter__(self):
-            (self.package, self.architecture, self.version, self.binnmu_version, self.binnmu_changelog) = await self.statesdb._get_package_to_build()
+            (self.package, self.architecture, self.version, self.binnmu_version, self.binnmu_changelog) = await self.statesdb._get_package_to_build(self.first_time, self.event_to_signal_on_failure)
             return self
 
         async def set_build_result(self, newstate):
@@ -197,10 +204,11 @@ class States(object):
         def versionstr(self):
             return self.version if self.binnmu_version is None else f'{self.version}+b{self.binnmu_version}'
 
-    def get_package_to_build(self):
-        return States.BuildLease(self)
+    def get_package_to_build(self, first_time, event_to_signal_on_failure):
+        return States.BuildLease(self, first_time, event_to_signal_on_failure)
 
-    async def _get_package_to_build(self):
+    async def _get_package_to_build(self, first_time, event_to_signal_on_failure):
+        do_signal = not first_time
         while True:
             async with self.db.execute("""SELECT * FROM states WHERE State == "Needs-Build"
                 ORDER BY Timestamp ASC
@@ -213,6 +221,10 @@ class States(object):
                         {'RowId': row['RowId']})
                     await self.db.commit()
                     return (row['Package'], row['Architecture'], row['Version'], row['BinNMUVersion'], row['BinNMUChangelog'])
+
+            if do_signal:
+                event_to_signal_on_failure.set()
+                do_signal = False
 
             await self.db_updated_cond.wait()
 
