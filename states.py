@@ -211,7 +211,7 @@ class States(object):
         do_signal = not first_time
         while True:
             async with self.db.execute("""SELECT * FROM states WHERE State == "Needs-Build"
-                ORDER BY Timestamp ASC
+                ORDER BY Timestamp ASC, Package ASC, Architecture ASC
                 LIMIT 1""") as cursor:
                 async for row in cursor:
                     await self.db.execute("""UPDATE states

@@ -17,9 +17,15 @@ logs, temporary build directories, etc.
 rebuild_base_dir = Path.home() / 'rebuild'
 
 """
-rebuild_arch: architecture to rebuild for.
+rebuild_archs: architectures to rebuild for.
 """
-rebuild_arch = 'amd64'
+rebuild_archs = ['amd64', 'i386']
+
+"""
+rebuild_indep_build_arch: architecture to use for building Architecture: all
+packages
+"""
+rebuild_indep_build_arch = rebuild_archs[0]
 
 """
 sbuild_chroot_mode: the chroot backend to pass to sbuild commands
@@ -29,7 +35,8 @@ sbuild_chroot_mode = 'systemd-nspawn'
 """
 sbuild_chroot_name: the name of the chroot to use for sbuild commands
 """
-sbuild_chroot_name = f'rebuild-{rebuild_arch}-sbuild'
+def sbuild_chroot_name(arch):
+    return f'rebuild-{arch}-sbuild'
 
 """
 incoming_interval: interval in seconds at which to process the
@@ -50,7 +57,7 @@ chroot_update_interval = 6 * 60 * 60
 """
 apt_sources_path: path to the system apt main_sources_Sources file
 """
-apt_sources_path = Path('/var/lib/apt/lists/localhost:3142_debian_dists_sid_main_source_Sources')
+apt_sources_path = Path('/var/lib/apt/lists/deb.debian.org_debian_dists_sid_main_source_Sources')
 
 # settings below here should not normally need to be adjusted
 
@@ -62,7 +69,8 @@ rebuild_logs_dir = rebuild_base_dir / 'logs'
 """
 rebuild_chroot_update_log_path: filename of the chroot update log
 """
-rebuild_chroot_update_log_path = rebuild_logs_dir / 'sbuild-update.log'
+def rebuild_chroot_update_log_path(arch):
+    return rebuild_logs_dir / f'sbuild-update-{arch}.log'
 
 """
 rebuild_tmp_build_dir: directory to use for temporary working space
@@ -83,12 +91,14 @@ rebuild_repo_incoming_dir = rebuild_repo_base_dir / 'incoming'
 """
 rebuild_repo_packages_path: path to the main rebuild repository's Packages file
 """
-rebuild_repo_packages_path = rebuild_repo_base_dir / f'dists/sid/main/binary-{rebuild_arch}/Packages'
+def rebuild_repo_packages_path(arch):
+    return rebuild_repo_base_dir / f'dists/sid/main/binary-{arch}/Packages'
 
 """
 rebuild_repo_udeb_packages_path: path to the main rebuild repository's udeb Packages file
 """
-rebuild_repo_udeb_packages_path = rebuild_repo_base_dir / f'dists/sid/main/debian-installer/binary-{rebuild_arch}/Packages'
+def rebuild_repo_udeb_packages_path(arch):
+    return rebuild_repo_base_dir / f'dists/sid/main/debian-installer/binary-{arch}/Packages'
 
 """
 rebuild_repo_partial_base_dir: base directory of the partial rebuild repository
@@ -98,7 +108,8 @@ rebuild_repo_partial_base_dir = rebuild_base_dir / 'repo-partial'
 """
 rebuild_repo_partial_packages_path: path to the partial rebuild repository's Packages file
 """
-rebuild_repo_partial_packages_path = rebuild_repo_partial_base_dir / f'dists/partial/main/binary-{rebuild_arch}/Packages'
+def rebuild_repo_partial_packages_path(arch):
+    return rebuild_repo_partial_base_dir / f'dists/partial/main/binary-{arch}/Packages'
 
 """
 database_path: the path to the sqlite database file

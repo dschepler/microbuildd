@@ -33,17 +33,18 @@ class Repo(object):
         else:
             raise RuntimeError(f'unsupported arch {arch}')
 
+        debNativeArch = conf.rebuild_indep_build_arch if arch == 'all' else arch
         for pkg, entry in srcs.items():
             if any(a in archFilter for a in entry["Architecture"].split()):
                 res[(pkg, arch)] = { 'Installed': False, 'Version': entry['Version'], 'Buildable': False, 'Reasons': 'unevaluated', 'BinNMUVersion': None }
 
         proc = await asyncio.create_subprocess_exec('dose-builddebcheck',
-                                                    f'--deb-native-arch={conf.rebuild_arch}',
+                                                    f'--deb-native-arch={debNativeArch}',
                                                     '--deb-drop-b-d-arch' if arch == 'all' else '--deb-drop-b-d-indep',
                                                     '--deb-emulate-sbuild',
                                                     '--successes',
-                                                    str(conf.rebuild_repo_packages_path),
-                                                    str(conf.rebuild_repo_partial_packages_path),
+                                                    str(conf.rebuild_repo_packages_path(debNativeArch)),
+                                                    str(conf.rebuild_repo_partial_packages_path(debNativeArch)),
                                                     str(conf.apt_sources_path),
                                                     stdin=asyncio.subprocess.DEVNULL,
                                                     stdout=asyncio.subprocess.PIPE
@@ -65,12 +66,12 @@ class Repo(object):
                     del resentry['Reasons']
 
         proc = await asyncio.create_subprocess_exec('dose-builddebcheck',
-                                                    f'--deb-native-arch={conf.rebuild_arch}',
+                                                    f'--deb-native-arch={debNativeArch}',
                                                     '--deb-drop-b-d-arch' if arch == 'all' else '--deb-drop-b-d-indep',
                                                     '--deb-emulate-sbuild',
                                                     '--explain', '--failures',
-                                                    str(conf.rebuild_repo_packages_path),
-                                                    str(conf.rebuild_repo_partial_packages_path),
+                                                    str(conf.rebuild_repo_packages_path(debNativeArch)),
+                                                    str(conf.rebuild_repo_partial_packages_path(debNativeArch)),
                                                     str(conf.apt_sources_path),
                                                     stdin=asyncio.subprocess.DEVNULL,
                                                     stdout=asyncio.subprocess.PIPE
@@ -98,36 +99,38 @@ class Repo(object):
 
         srcs = self.scanSrcs()
 
-        await self.scanArch(conf.rebuild_arch, srcs, res)
+        for arch in conf.rebuild_archs:
+            await self.scanArch(arch, srcs, res)
         await self.scanArch('all', srcs, res)
 
-        for packages_path in (conf.rebuild_repo_packages_path, conf.rebuild_repo_udeb_packages_path):
-            with open(packages_path) as fh:
-                for pkgentry in deb822.Packages.iter_paragraphs(fh, use_apt_pkg=False):
-                    arch = pkgentry['Architecture']
-                    vers = pkgentry['Version']
-                    src = pkgentry.get('Source', pkgentry['Package'])
-                    binnmuver = None
+        for buildArch in conf.rebuild_archs:
+            for packages_path in (conf.rebuild_repo_packages_path(buildArch), conf.rebuild_repo_udeb_packages_path(buildArch)):
+                with open(packages_path) as fh:
+                    for pkgentry in deb822.Packages.iter_paragraphs(fh, use_apt_pkg=False):
+                        arch = pkgentry['Architecture']
+                        vers = pkgentry['Version']
+                        src = pkgentry.get('Source', pkgentry['Package'])
+                        binnmuver = None
 
-                    # remove +b<n> from tail and put <n> into BinNMUVersion
-                    if m := re.match('(.*)\+b([0-9]+)', vers):
-                        vers = m[1]
-                        binnmuver = int(m[2])
+                        # remove +b<n> from tail and put <n> into BinNMUVersion
+                        if m := re.match('(.*)\+b([0-9]+)', vers):
+                            vers = m[1]
+                            binnmuver = int(m[2])
 
-                    # handle e.g. Source: gcc-defaults (1.185.1)
-                    # note: in combination of binNMU with modified package
-                    # version, the package gets e.g.
-                    # Source: gcc-defaults (1.185.1)
-                    # Version: 10.3.1+b1
-                    if m := re.match('([^ ]*) [(](.*)[)]', src):
-                        src = m[1]
-                        vers = m[2]
+                        # handle e.g. Source: gcc-defaults (1.185.1)
+                        # note: in combination of binNMU with modified package
+                        # version, the package gets e.g.
+                        # Source: gcc-defaults (1.185.1)
+                        # Version: 10.3.1+b1
+                        if m := re.match('([^ ]*) [(](.*)[)]', src):
+                            src = m[1]
+                            vers = m[2]
 
-                    resentry = res.get((src, arch), None)
-                    if resentry is not None and resentry['Version'] == vers:
-                        resentry['Installed'] = True
-                        if binnmuver is not None and (resentry['BinNMUVersion'] is None or binnmuver > resentry['BinNMUVersion']):
-                            resentry['BinNMUVersion'] = binnmuver
+                        resentry = res.get((src, arch), None)
+                        if resentry is not None and resentry['Version'] == vers:
+                            resentry['Installed'] = True
+                            if binnmuver is not None and (resentry['BinNMUVersion'] is None or binnmuver > resentry['BinNMUVersion']):
+                                resentry['BinNMUVersion'] = binnmuver
 
         return res
 

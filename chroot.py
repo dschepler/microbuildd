@@ -6,16 +6,17 @@ import micro_buildd_conf as conf
 
 class Chroot(object):
     async def update(self):
-        logging.info('Updating build chroot')
-        with open(conf.rebuild_chroot_update_log_path, 'w') as outfile:
-            proc = await asyncio.create_subprocess_exec(
-                'sbuild-update', f'--chroot-mode={conf.sbuild_chroot_mode}', '--update', '--dist-upgrade', '--autoremove', conf.sbuild_chroot_name,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=outfile,
-                stderr=asyncio.subprocess.STDOUT)
-            await proc.wait()
-        if proc.returncode != 0:
-            logging.warning(f'sbuild-update process failed, see {str(conf.rebuild_chroot_update_log_path)}')
+        for arch in conf.rebuild_archs:
+            logging.info(f'Updating build chroot for {arch}')
+            with open(conf.rebuild_chroot_update_log_path(arch), 'w') as outfile:
+                proc = await asyncio.create_subprocess_exec(
+                    'sbuild-update', f'--chroot-mode={conf.sbuild_chroot_mode}', '--update', '--dist-upgrade', '--autoremove', conf.sbuild_chroot_name(arch),
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=outfile,
+                    stderr=asyncio.subprocess.STDOUT)
+                await proc.wait()
+            if proc.returncode != 0:
+                logging.warning(f'sbuild-update process failed, see {str(conf.rebuild_chroot_update_log_path(arch))}')
 
     @contextmanager
     def mkbuilddir(self, package, architecture, version):
@@ -34,8 +35,12 @@ class Chroot(object):
         binnmu_changelog = build_lease.binnmu_changelog
         with self.mkbuilddir(package, architecture, version) as builddir:
             logging.info(f'Starting build of {package}:{architecture} version {build_lease.versionstr()}')
+            buildArch = conf.rebuild_indep_build_arch if architecture == 'all' else architecture
             proc = await asyncio.create_subprocess_exec(
-                'sbuild', f'--chroot-mode={conf.sbuild_chroot_mode}', '-c', f'chroot:{conf.sbuild_chroot_name}', '-d', 'unstable',
+                'sbuild', f'--arch={buildArch}',
+                f'--chroot-mode={conf.sbuild_chroot_mode}',
+                '-c', f'chroot:{conf.sbuild_chroot_name(buildArch)}',
+                '-d', 'unstable',
                 '--no-arch-any' if architecture == 'all' else '--no-arch-all',
                 *((f'--binNMU={binnmu_version}', f'--make-binNMU={binnmu_changelog}') if binnmu_version is not None else ()),
                 '-m', conf.maintainer,
